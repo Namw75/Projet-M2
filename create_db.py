@@ -1,21 +1,26 @@
 import sqlite3
 import pandas as pd
+import os
 
-# === Chargement des CSV ===
-contacts_df = pd.read_csv("Mémoire BDD Clients - Contact .csv")
-companies_df = pd.read_csv("Mémoire BDD Clients - Company.csv")
+# Chemins vers les fichiers CSV
+CONTACTS_CSV = "data/Mémoire BDD Clients - Contact .csv"
+COMPANIES_CSV = "data/Mémoire BDD Clients - Company.csv"
 
-# === Connexion SQLite ===
-conn = sqlite3.connect("bdd_clients.db")
-cursor = conn.cursor()
+# Nom de la base SQLite
+DB_PATH = os.getenv("DB_PATH", "bdd_clients.db")
 
-# === Sauvegarde dans SQLite ===
-contacts_df.to_sql("contacts", conn, if_exists="replace", index=False)
-companies_df.to_sql("companies", conn, if_exists="replace", index=False)
+def create_database():
+    # Chargement des données
+    contacts_df = pd.read_csv(CONTACTS_CSV)
+    companies_df = pd.read_csv(COMPANIES_CSV)
 
-# === Vérification rapide ===
-print("Tables créées avec succès :")
-for row in cursor.execute("SELECT name FROM sqlite_master WHERE type='table';"):
-    print(f" - {row[0]}")
+    # Connexion à SQLite
+    conn = sqlite3.connect(DB_PATH)
+    contacts_df.to_sql("contacts", conn, if_exists="replace", index=False)
+    companies_df.to_sql("companies", conn, if_exists="replace", index=False)
 
-conn.close()
+    print("✅ Base de données créée avec succès.")
+    conn.close()
+
+if __name__ == "__main__":
+    create_database()
