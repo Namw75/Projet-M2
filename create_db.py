@@ -3,7 +3,7 @@ import pandas as pd
 import os
 
 # Chemins vers les fichiers CSV
-CONTACTS_CSV = "data/Mémoire BDD Clients - Contact .csv"
+CONTACTS_CSV = "data/Mémoire BDD Clients - Contact.csv"
 COMPANIES_CSV = "data/Mémoire BDD Clients - Company.csv"
 
 # Nom de la base SQLite
