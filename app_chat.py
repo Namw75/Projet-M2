@@ -26,6 +26,14 @@ def save_chat_history(messages):
     with shelve.open("chat_history") as db:
         db["messages"] = messages
 
+def load_ai_viz_history():
+    with shelve.open("ai_viz_history") as db:
+        return db.get("messages", [])
+
+def save_ai_viz_history(messages):
+    with shelve.open("ai_viz_history") as db:
+        db["messages"] = messages
+
 def prepare_download_links(df: pd.DataFrame):
     csv = df.to_csv(index=False).encode()
     b64_csv = base64.b64encode(csv).decode()
@@ -51,7 +59,7 @@ with st.sidebar:
     st.markdown("### 🧭 Navigation")
     page = st.selectbox(
         "Choisir une page :",
-        ["💬 Chat SQL", "📧 Email Campaign"],
+        ["💬 Chat SQL", "🤖 AI Visualization", "📧 Email Campaign"],
         index=0
     )
     
@@ -60,6 +68,8 @@ with st.sidebar:
     # Informations de la page actuelle
     if page == "💬 Chat SQL":
         st.info("💡 Pose tes questions en langage naturel")
+    elif page == "🤖 AI Visualization":
+        st.info("📊 Génération automatique de graphiques avec IA (SQL + Documents)")
     elif page == "📧 Email Campaign":
         st.info("📧 Envoi d'emails personnalisés via Gmail")
     
@@ -95,11 +105,24 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-    # Bouton de suppression
+    # Bouton de suppression - adapté selon la page
     st.markdown('<div class="bottom-btn">', unsafe_allow_html=True)
-    if st.button("🗑️ Supprimer l'historique", key="btn_delete_fixed"):
-        st.session_state.messages = []
-        save_chat_history([])
+    if page == "💬 Chat SQL":
+        if st.button("🗑️ Supprimer l'historique SQL", key="btn_delete_sql"):
+            st.session_state.messages = []
+            save_chat_history([])
+    elif page == "🤖 AI Visualization":
+        if st.button("🗑️ Supprimer l'historique AI Viz", key="btn_delete_ai_viz"):
+            st.session_state.ai_viz_messages = []
+            save_ai_viz_history([])
+    else:
+        # Page Email Campaign - pas d'historique
+        if st.button("🗑️ Supprimer tous les historiques", key="btn_delete_all"):
+            st.session_state.messages = []
+            if "ai_viz_messages" in st.session_state:
+                st.session_state.ai_viz_messages = []
+            save_chat_history([])
+            save_ai_viz_history([])
     st.markdown('</div>', unsafe_allow_html=True)
 
 # === Contenu principal selon la page sélectionnée ===
@@ -119,27 +142,74 @@ if page == "💬 Chat SQL":
         cursor = conn.cursor()
 
         try:
-            sql = get_sql_from_gpt(prompt)
-
-            if sql.lower().startswith(("insert", "update", "delete")):
-                cursor.execute(sql)
-                conn.commit()
-                response = "✅ Requête exécutée avec succès."
-                st.chat_message("assistant", avatar=BOT_AVATAR).markdown(response)
+            sql = get_sql_from_gpt(prompt, st.session_state.messages)
+            
+            # Séparer les requêtes multiples
+            sql_statements = []
+            if ';' in sql:
+                # Plusieurs requêtes
+                statements = [s.strip() for s in sql.split(';') if s.strip()]
+                sql_statements = statements[:3]  # Maximum 3 requêtes
             else:
-                df = pd.read_sql_query(sql, conn)
-                st.session_state.messages.append({"role": "assistant", "content": "📊 Résultat affiché."})
-
-                with st.chat_message("assistant", avatar=BOT_AVATAR):
-                    st.markdown("📊 Résultat :")
-                    st.dataframe(df, use_container_width=True)
-
-                    href_csv, href_excel = prepare_download_links(df)
-                    with st.expander("🧠 Voir la requête SQL & téléchargements"):
-                        st.markdown("📄 Requête SQL générée :")
-                        st.code(sql, language="sql")
-                        st.markdown(href_csv, unsafe_allow_html=True)
-                        st.markdown(href_excel, unsafe_allow_html=True)
+                # Une seule requête
+                sql_statements = [sql.strip()]
+            
+            # Exécuter chaque requête séquentiellement
+            results = []
+            modification_made = False
+            
+            with st.chat_message("assistant", avatar=BOT_AVATAR):
+                for i, statement in enumerate(sql_statements):
+                    if not statement:
+                        continue
+                        
+                    if len(sql_statements) > 1:
+                        st.markdown(f"**🔄 Étape {i+1}/{len(sql_statements)}**")
+                    
+                    try:
+                        if statement.lower().startswith(("insert", "update", "delete")):
+                            cursor.execute(statement)
+                            conn.commit()
+                            modification_made = True
+                            st.success(f"✅ Requête {i+1} exécutée avec succès")
+                            results.append(f"Requête {i+1}: Modification effectuée")
+                        else:
+                            df = pd.read_sql_query(statement, conn)
+                            st.markdown(f"📊 **Résultat requête {i+1}:**")
+                            st.dataframe(df, use_container_width=True)
+                            
+                            if not df.empty:
+                                href_csv, href_excel = prepare_download_links(df)
+                                with st.expander(f"📥 Télécharger résultat requête {i+1}"):
+                                    st.markdown(href_csv, unsafe_allow_html=True)
+                                    st.markdown(href_excel, unsafe_allow_html=True)
+                            
+                            results.append(f"Requête {i+1}: {len(df)} résultats")
+                    
+                    except Exception as e:
+                        st.error(f"❌ Erreur requête {i+1}: {e}")
+                        results.append(f"Requête {i+1}: Erreur - {e}")
+                
+                # Résumé final et SQL optionnel
+                if len(sql_statements) > 1:
+                    st.markdown("---")
+                    st.markdown("### 📋 Résumé d'exécution:")
+                    for result in results:
+                        st.markdown(f"- {result}")
+                
+                # SQL en option (masqué par défaut)
+                with st.expander("🔍 Voir les requêtes SQL générées", expanded=False):
+                    for i, statement in enumerate(sql_statements):
+                        st.markdown(f"**Requête {i+1}:**")
+                        st.code(statement, language="sql")
+                
+                # Message pour l'historique
+                if modification_made:
+                    response = f"✅ {len(sql_statements)} requête(s) exécutée(s) avec succès"
+                else:
+                    response = f"📊 {len(sql_statements)} requête(s) de consultation exécutée(s)"
+                
+                st.session_state.messages.append({"role": "assistant", "content": response})
 
         except Exception as e:
             response = f"❌ Erreur : {e}"
@@ -147,6 +217,184 @@ if page == "💬 Chat SQL":
             st.session_state.messages.append({"role": "assistant", "content": response})
 
         save_chat_history(st.session_state.messages)
+
+elif page == "🤖 AI Visualization":
+    # Import de la logique AI Viz
+    from core.ai_viz_logic import run_ai_viz_pipeline, init_chroma_client, init_sql_connection, process_uploaded_file, add_document_to_chroma
+    import pandas as pd
+    import base64
+    
+    # Initialiser les clés de session spécifiques à cet onglet avec persistance
+    if "ai_viz_messages" not in st.session_state:
+        st.session_state.ai_viz_messages = load_ai_viz_history()
+    
+    # Sidebar pour la configuration
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### ⚙️ Configuration AI Viz")
+        
+        # Statut des connexions
+        chroma_client, collection = init_chroma_client()
+        sql_conn = init_sql_connection()
+        
+        if collection:
+            doc_count = collection.count()
+            st.success(f"✅ ChromaDB ({doc_count} documents)")
+        else:
+            st.error("❌ ChromaDB non disponible")
+            
+        if sql_conn:
+            try:
+                test_contacts = pd.read_sql_query("SELECT COUNT(*) as count FROM contacts", sql_conn)
+                test_companies = pd.read_sql_query("SELECT COUNT(*) as count FROM companies", sql_conn)
+                contacts_count = test_contacts['count'].iloc[0]
+                companies_count = test_companies['count'].iloc[0]
+                st.success(f"✅ Base SQL ({contacts_count} contacts, {companies_count} entreprises)")
+            except:
+                st.warning("⚠️ Base SQL (erreur)")
+        else:
+            st.error("❌ Base SQL non disponible")
+        
+        # Upload de documents
+        st.markdown("---")
+        st.markdown("### 📁 Upload Documents")
+        uploaded_files = st.file_uploader(
+            "Ajouter des documents à ChromaDB",
+            type=['txt', 'pdf', 'docx'],
+            accept_multiple_files=True,
+            key="ai_viz_uploader"
+        )
+        
+        if uploaded_files and collection:
+            for uploaded_file in uploaded_files:
+                file_key = f"ai_viz_processed_{uploaded_file.name}_{uploaded_file.size}"
+                
+                if file_key not in st.session_state:
+                    with st.spinner(f"Traitement de {uploaded_file.name}..."):
+                        content = process_uploaded_file(uploaded_file)
+                        
+                        if content.startswith("❌"):
+                            st.error(content)
+                        else:
+                            chunks_added = add_document_to_chroma(collection, uploaded_file.name, content)
+                            if chunks_added > 0:
+                                st.success(f"✅ {uploaded_file.name} ajouté ({chunks_added} chunks)")
+                                st.session_state[file_key] = True
+                                st.rerun()
+                            else:
+                                st.error("❌ Échec de l'ajout")
+                else:
+                    st.info(f"📄 {uploaded_file.name} déjà traité")
+    
+    # === Affichage du chat AI Visualization ===
+    for message in st.session_state.ai_viz_messages:
+        avatar = USER_AVATAR if message["role"] == "user" else BOT_AVATAR
+        with st.chat_message(message["role"], avatar=avatar):
+            if message["role"] == "assistant" and "image" in message:
+                # Afficher l'image
+                st.image(message["image"], use_container_width=True)
+                
+                # Afficher les détails dans un expander
+                with st.expander("🔍 Détails de l'analyse"):
+                    if "routing" in message:
+                        st.info(f"🧠 Routage IA : {message['routing']}")
+                    if "sql" in message and message["sql"]:
+                        st.markdown("**🗃️ SQL générée :**")
+                        st.code(message["sql"], language="sql")
+                    if "code" in message and message["code"]:
+                        st.markdown("**💻 Code Python :**")
+                        st.code(message["code"], language="python")
+                    if "df" in message and message["df"] is not None and not message["df"].empty:
+                        st.markdown("**📊 Données utilisées :**")
+                        st.dataframe(message["df"].head())
+                    if "vector_context" in message and message["vector_context"]:
+                        st.markdown("**📄 Contexte documentaire :**")
+                        st.text_area("", message["vector_context"][:500] + "...", height=100, disabled=True)
+            else:
+                st.markdown(message["content"])
+
+    # === Interaction utilisateur ===
+    if prompt := st.chat_input("Que veux-tu visualiser ? (ex: graphique des ventes, analyse NewJeans...)"):
+        # Afficher le message utilisateur
+        st.chat_message("user", avatar=USER_AVATAR).markdown(prompt)
+        st.session_state.ai_viz_messages.append({"role": "user", "content": prompt})
+
+        # Traitement avec l'IA
+        with st.chat_message("assistant", avatar=BOT_AVATAR):
+            with st.spinner("🤖 Analyse et génération en cours..."):
+                try:
+                    result = run_ai_viz_pipeline(prompt, st.session_state.ai_viz_messages)
+                    
+                    if result['image_bytes']:
+                        # Cas avec visualisation
+                        st.image(result['image_bytes'], use_container_width=True)
+                        
+                        # Préparer le message pour l'historique
+                        message = {
+                            "role": "assistant",
+                            "content": "📊 Visualisation générée avec succès !",
+                            "image": result['image_bytes'],
+                            "routing": result['routing'],
+                            "sql": result['sql'],
+                            "code": result['code'],
+                            "df": result['df'],
+                            "vector_context": result['vector_context']
+                        }
+                        
+                        # Afficher les détails
+                        with st.expander("🔍 Détails de l'analyse"):
+                            st.info(f"🧠 Routage IA : {result['routing']}")
+                            if result['sql']:
+                                st.markdown("**🗃️ SQL générée :**")
+                                st.code(result['sql'], language="sql")
+                            if result['code']:
+                                st.markdown("**💻 Code Python :**")
+                                st.code(result['code'], language="python")
+                            if result['df'] is not None and not result['df'].empty:
+                                st.markdown("**📊 Données utilisées :**")
+                                st.dataframe(result['df'].head())
+                            if result['vector_context']:
+                                st.markdown("**📄 Contexte documentaire :**")
+                                st.text_area("", result['vector_context'][:500] + "...", height=100, disabled=True)
+                                
+                    elif result['vector_context'] and not result['vector_context'].startswith("Aucun document"):
+                        # Cas avec analyse documentaire (pas de graphique)
+                        if result['code'].strip().startswith('#'):
+                            # Si c'est une analyse textuelle
+                            analysis_text = result['code'].replace('# ', '').replace('#', '')
+                            st.markdown("### 📄 Analyse basée sur les documents")
+                            st.markdown(analysis_text)
+                        else:
+                            st.markdown("### 💻 Code d'analyse généré")
+                            st.code(result['code'], language="python")
+                        
+                        message = {
+                            "role": "assistant", 
+                            "content": "📄 Analyse documentaire terminée",
+                            "routing": result['routing'],
+                            "code": result['code'],
+                            "vector_context": result['vector_context']
+                        }
+                        
+                    elif result['error']:
+                        # Cas d'erreur
+                        st.error(f"❌ Erreur lors de la génération : {result['error']}")
+                        st.code(result['code'], language="python")
+                        message = {"role": "assistant", "content": f"❌ Erreur : {result['error']}"}
+                        
+                    else:
+                        # Cas par défaut
+                        st.warning("⚠️ Aucune donnée pertinente trouvée pour générer une visualisation.")
+                        message = {"role": "assistant", "content": "⚠️ Aucune donnée pertinente trouvée."}
+                    
+                    st.session_state.ai_viz_messages.append(message)
+                    save_ai_viz_history(st.session_state.ai_viz_messages)
+                     
+                except Exception as e:
+                    error_msg = f"❌ Erreur lors du traitement : {e}"
+                    st.error(error_msg)
+                    st.session_state.ai_viz_messages.append({"role": "assistant", "content": error_msg})
+                    save_ai_viz_history(st.session_state.ai_viz_messages)
 
 elif page == "📧 Email Campaign":
     st.header("📧 Campagne Email Personnalisée avec IA")
